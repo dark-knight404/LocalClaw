@@ -1,0 +1,17 @@
+services:
+  agent:
+    build: .
+    # Automatically pulls these exact variables from your local .env file
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - GITHUB_PAT=${GITHUB_PAT}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - LLM_API_URL=${LLM_API_URL}
+    
+    # Required for the container to talk to llama-server on the host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    # Mounts the local repository directory into the container
+    volumes:
+      - ./repo:/app/repo

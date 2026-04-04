@@ -1,0 +1,9 @@
+# Ignore the cloned working directory
+repo/
+
+# Ignore environment variables
+.env
+
+# Ignore Python caches
+__pycache__/
+*.pyc
