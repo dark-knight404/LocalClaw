@@ -180,5 +180,7 @@ The agent currently targets the `main` branch by default. To use `master` or ano
 - `python-telegram-bot`: Telegram bot framework
 - `requests`: HTTP library for API calls
 - `gitpython`: Git repository management
+
 See `requirements.txt` for versions.
+
 ---
