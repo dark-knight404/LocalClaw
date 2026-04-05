@@ -21,12 +21,14 @@ if not os.path.exists(os.path.join(REPO_PATH, ".git")):
 repo = Repo(REPO_PATH)
 
 def ask_qwen(prompt_text):
-    """Sends the prompt and forces a strict JSON response schema with action types."""
+    """Sends the prompt and forces a strict JSON response schema."""
     headers = {"Content-Type": "application/json"}
 
     system_instruction = (
         "You are an autonomous coding agent. You will receive a request to modify a repository. "
         "You MUST respond ONLY with a valid JSON object. Do not wrap the JSON in markdown code blocks. "
+        "CRITICAL: If modifying an existing file, you MUST output the ENTIRE updated file. "
+        "Do not use placeholders, comments like '# existing code', or ellipses. Truncating code will crash the system.\n"
         "Use this exact schema:\n"
         "{\n"
         '  "action": "write" OR "delete",\n'
@@ -41,7 +43,7 @@ def ask_qwen(prompt_text):
             {"role": "user", "content": prompt_text}
         ],
         "temperature": 0.1,
-        "max_tokens": 4000
+        "max_tokens": 5000 # Increased to allow for full-file outputs
     }
 
     try:
@@ -74,7 +76,7 @@ def create_pull_request(branch_name, title, body):
     data = {
         "title": title,
         "head": branch_name,
-        "base": "main",  # Change this if your default branch is 'master'
+        "base": "main",
         "body": body
     }
     response = requests.post(url, headers=headers, json=data)
@@ -83,11 +85,11 @@ def create_pull_request(branch_name, title, body):
     else:
         raise Exception(f"PR Creation Failed: {response.text}")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_request = update.message.text
+async def execute_task(update: Update, llm_prompt: str, commit_context: str):
+    """Core logic for interacting with LLM and Git, shared by all commands."""
     await update.message.reply_text("Thinking and processing...")
 
-    raw_response = ask_qwen(user_request)
+    raw_response = ask_qwen(llm_prompt)
     if not raw_response or raw_response.startswith("API Error"):
         await update.message.reply_text(f"LLM failure: {raw_response}")
         return
@@ -109,15 +111,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # 1. Reset to main and pull latest changes to avoid conflicts
         repo.git.checkout('main')
         repo.git.pull('origin', 'main')
 
-        # 2. Create a unique branch for this task
         branch_name = f"agent-update-{int(time.time())}"
         repo.git.checkout('HEAD', b=branch_name)
 
-        # 3. Execute the File Action
         if action == "delete":
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -136,40 +135,85 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Error: Unknown action '{action}' hallucinated by LLM.")
             return
 
-        # 4. Commit, Push, and PR
         if repo.is_dirty() or repo.untracked_files:
             commit_message = f"Agent Action: {action_text}"
             repo.index.commit(commit_message)
 
             origin = repo.remote(name='origin')
-            # Push the new branch to origin
             origin.push(f"{branch_name}:{branch_name}")
 
-            # Create the PR via API
             pr_url = create_pull_request(
                 branch_name=branch_name,
                 title=commit_message,
-                body=f"Automated PR generated via Telegram prompt:\n\n> {user_request}"
+                body=f"Automated PR generated via Telegram.\n\nContext:\n> {commit_context}"
             )
 
             await update.message.reply_text(f"Success! {action_text}\nReview and merge your PR here: {pr_url}")
         else:
             await update.message.reply_text(f"Code for '{target_file}' generated, but matches existing Git state. No PR created.")
 
-        # 5. Clean up: Return agent to main branch
         repo.git.checkout('main')
 
     except Exception as e:
-        # If it fails, attempt to return to main branch so the repo isn't left in a broken state
         try:
             repo.git.checkout('main')
         except:
             pass
         await update.message.reply_text(f"Git/Filesystem Error: {str(e)}")
 
+
+async def handle_edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /edit filename instructions command."""
+    if len(context.args) < 2:
+        await update.message.reply_text("Syntax Error. Usage: /edit <filename> <instructions>")
+        return
+
+    target_file = context.args[0]
+    instructions = " ".join(context.args[1:])
+
+    file_path = os.path.abspath(os.path.join(REPO_PATH, target_file))
+    if not file_path.startswith(os.path.abspath(REPO_PATH)):
+        await update.message.reply_text("Security Alert: Path traversal blocked.")
+        return
+
+    if not os.path.exists(file_path):
+        await update.message.reply_text(f"Error: File '{target_file}' does not exist in the repository.")
+        return
+
+    try:
+        with open(file_path, "r") as f:
+            current_content = f.read()
+    except Exception as e:
+        await update.message.reply_text(f"Error reading file: {e}")
+        return
+
+    # Inject the file content into the LLM prompt
+    injected_prompt = (
+        f"Update the file '{target_file}'.\n\n"
+        f"Instructions: {instructions}\n\n"
+        f"Here is the current file content. You MUST output the ENTIRE updated file. "
+        f"Do NOT use placeholders or truncate the code.\n\n"
+        f"```\n{current_content}\n```"
+    )
+
+    await execute_task(update, injected_prompt, commit_context=instructions)
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles standard text messages for creating new files."""
+    user_request = update.message.text
+    await execute_task(update, user_request, commit_context=user_request)
+
+
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Map the /edit command
+    application.add_handler(CommandHandler("edit", handle_edit_command))
+
+    # Map standard text messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     application.run_polling()
 
 if __name__ == "__main__":
