@@ -11,14 +11,17 @@ LocalClaw is an autonomous AI coding agent that bridges Telegram messaging with 
 3. Create a feature branch with the changes
 4. Automatically open a GitHub Pull Request for review
 
+**Now with targeted file editing:** Use the `/edit` command to safely update existing files with natural language instructions!
+
 ## Features
 
-- **Telegram Integration**: Receive and respond to commands through Telegram
-- **Local LLM Processing**: Uses local language models (compatible with OpenAI-compatible APIs)
-- **Autonomous Git Operations**: Automatically clones repos, creates branches, and manages commits
-- **GitHub PR Automation**: Generates and opens pull requests with your changes
-- **Security**: Path traversal protection to prevent unauthorized file modifications
-- **Containerized**: Runs in Docker for easy deployment and isolation
+- **Telegram Integration:** Receive and respond to commands through Telegram chat
+- **Local LLM Processing:** Send structured requests to a local LLM API (OpenAI compatible)
+- **File Editing with /edit:** Update existing files with explicit instructions
+- **Autonomous Git Operations:** Clones repo, creates branches, commits changes, and pushes
+- **GitHub PR Automation:** Opens PRs for review automatically
+- **Security:** Path traversal protections prevent unauthorized operations
+- **Containerized:** Runs in Docker for easy deployment
 
 ## Architecture
 
@@ -26,20 +29,18 @@ LocalClaw is an autonomous AI coding agent that bridges Telegram messaging with 
 Telegram → Agent (Docker) → Local LLM → Git Operations → GitHub API
 ```
 
-The agent:
-- Listens for messages on Telegram
-- Sends prompts to a local LLM API endpoint
-- Parses JSON responses defining file operations (write/delete)
-- Executes git operations (checkout, commit, push)
-- Creates pull requests via GitHub REST API
+- Listens for messages and `/edit` commands on Telegram
+- Sends prompts to LLM with strict JSON response requirement
+- Executes git file operations from LLM's response (`write`/`delete`)
+- Creates PRs for reviews
 
 ## Prerequisites
 
-- Docker and Docker Compose
-- A local LLM server running (e.g., llama.cpp)
-- Telegram Bot Token (from [@BotFather](https://t.me/botfather))
+- Docker & Docker Compose
+- Local LLM server (e.g., llama.cpp)
+- Telegram Bot Token ([@BotFather](https://t.me/botfather))
 - GitHub Personal Access Token (PAT)
-- A GitHub repository to target
+- Target GitHub repository
 
 ## Setup
 
@@ -52,32 +53,24 @@ cd LocalClaw
 
 ### 2. Configure Environment Variables
 
-Copy `.env.example` to `.env` and fill in your credentials:
+Copy `.env.example` and edit with your credentials:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+`.env` entries:
 
 ```env
-TELEGRAM_TOKEN=your_bot_token_here
-GITHUB_PAT=your_personal_access_token
+TELEGRAM_TOKEN=your_bot_token
+GITHUB_PAT=your_github_personal_access_token
 GITHUB_REPO=username/repo
 LLM_API_URL=http://host.docker.internal:8080/v1/chat/completions
 ```
 
-**Variable Guide:**
-- `TELEGRAM_TOKEN`: Bot token from Telegram BotFather
-- `GITHUB_PAT`: GitHub Personal Access Token (needs `repo` scope)
-- `GITHUB_REPO`: Target repository in format `owner/repo`
-- `LLM_API_URL`: Local LLM API endpoint (default: llama.cpp on port 8080)
-
 ### 3. Start the Local LLM Server
 
-Command will be server-specific.
-
-The server should be accessible at `http://localhost:8080/v1/chat/completions`
+Make sure your LLM server is running and accessible at the specified API URL.
 
 ### 4. Run with Docker Compose
 
@@ -85,102 +78,118 @@ The server should be accessible at `http://localhost:8080/v1/chat/completions`
 docker-compose up --build
 ```
 
-The agent will start and listen for Telegram messages.
+The agent now listens for Telegram messages and commands.
 
 ## Usage
 
-Send a message to your Telegram bot describing what you want to code:
+### 1. Freeform Code Generation
+
+Send a plain message to the bot, e.g.
 
 ```
 Create a new file called utils.py with a function that reverses a string
 ```
 
 The agent will:
-1. Generate code based on your request
-2. Create a branch named `agent-update-{timestamp}`
-3. Write the file(s)
-4. Push to GitHub
-5. Open a PR with a summary of changes
-6. Reply with a link to the PR
+- Generate the code
+- Create a branch `agent-update-{timestamp}`
+- Make file changes
+- Push and open a PR
+- Reply with a PR link
 
-## How It Works
+### 2. Precise File Editing with /edit
 
-### Message Handling Flow
+Update an existing file with detailed instructions:
 
-1. **User sends Telegram message** → Agent receives via `handle_message()`
-2. **LLM Processing** → Prompt sent to local LLM API with strict JSON schema requirement
-3. **JSON Parsing** → Extracts action (write/delete) and file path
-4. **Git Operations**:
-   - Checkout and pull latest `main` branch
-   - Create feature branch: `agent-update-{timestamp}`
-   - Execute file operations (write or delete)
-   - Commit changes
-   - Push branch to GitHub
-5. **PR Creation** → Uses GitHub API to open pull request
-6. **User Notification** → Sends Telegram reply with PR link
+```
+/edit <relative/path/to/file.py> <natural language instructions>
+```
 
-### LLM Response Schema
+**Example:**
 
-The agent expects JSON responses from the LLM:
+```
+/edit app/utils.py Add a function called count_words(text) that returns the number of words in a string
+```
+
+**How it works:**
+- Agent injects current file content + your instruction into the LLM prompt  
+- LLM generates the entire updated file (partial outputs or placeholders are blocked)
+- The agent:  
+    - Checks out the main branch, pulls latest changes, creates a new feature branch
+    - Writes the updated file, commits, pushes the branch, and opens a PR
+    - Replies in Telegram with the PR link
+
+**Notes:**
+- The `/edit` command only works on files that already exist in the repository.
+- It blocks any attempt to edit files outside the repo (path traversal protection).
+- If the file does not exist, you’ll receive an error message.
+
+### 3. File Operations (via LLM Instructions)
+
+For other file operations (creating new files, deleting), just send a clear message.  
+The LLM and agent coordinate using a strict JSON API for safety.
+
+---
+
+## Command Summary
+
+| Command                  | Description                                               |
+|--------------------------|-----------------------------------------------------------|
+| Text message             | Create, modify, or delete files based on your prompt      |
+| `/edit <file> <inst>`    | Update specific existing file with your instructions      |
+
+---
+
+## LLM Response Schema
+
+All LLM replies **must** use this JSON structure:
 
 ```json
 {
   "action": "write" | "delete",
   "filename": "path/to/file.ext",
-  "content": "file content here (empty if action is delete)"
+  "content": "entire file content (leave blank if deleting)"
 }
 ```
 
-## Configuration
+- `"write"`: The entire updated file is required; placeholders will trigger an error.
+- `"delete"`: File will be removed if it exists.
 
-### LLM API Endpoint
+---
 
-The default configuration assumes llama.cpp running locally. To use a different LLM:
+## Configuration Tips
 
-1. Update `LLM_API_URL` in `.env` to point to your API
-2. Ensure the API is compatible with OpenAI's chat completions format
+- To use a different LLM, update `LLM_API_URL` in `.env`
+- The default PR base branch is `main`. To change, edit the `"base"` value in `agent.py`.
 
-### Git Defaults
+---
 
-The agent currently targets the `main` branch by default. To use `master` or another branch, edit line 77 in `agent.py`:
+## Security
 
-```python
-"base": "main",  # Change to your default branch
-```
+- **Path Traversal Protection:** Blocks access/edits outside repo folder.
+- **PAT:** Never commit your `.env`/token to version control.
+- **Validation:** Invalid LLM responses are identified and rejected.
 
-## Security Considerations
-
-- **Path Traversal Protection**: Blocks attempts to write outside the target repository
-- **GitHub Token**: Keep your PAT secure; don't commit `.env` to version control
-- **LLM Validation**: Validates LLM JSON responses before executing file operations
+---
 
 ## Troubleshooting
 
-### Container can't reach local LLM
-- Ensure the LLM server is running (default port 11434)
-- Check `LLM_API_URL` is correct in `.env`
-- Docker uses `host.docker.internal` to access host services (configured in docker-compose.yml)
+- **Container can't reach local LLM:** Check LLM is running and API URL is reachable. Try `host.docker.internal` for Docker-to-host.
+- **PR failures:** Ensure the PAT is valid and has `repo` scope, and your repo exists.
+- **/edit fails:** Make sure you provide a valid path to an existing file.
+- **Bot doesn't respond:** Validate your Telegram token and view docker logs:  
+  ```
+  docker-compose logs agent
+  ```
 
-### PR creation fails
-- Verify `GITHUB_PAT` has `repo` scope permissions
-- Check `GITHUB_REPO` format is correct: `owner/repo`
-- Ensure the GitHub repository exists and is accessible
-
-### Agent doesn't respond to Telegram messages
-- Verify `TELEGRAM_TOKEN` is correct
-- Check container logs: `docker-compose logs agent`
-- Ensure the bot is not already running elsewhere with the same token
-
-### LLM returns invalid JSON
-- Lower the temperature in `agent.py` (line 43) for more deterministic outputs
-- Provide more specific prompts to the agent
+---
 
 ## Dependencies
 
-- `python-telegram-bot`: Telegram bot framework
-- `requests`: HTTP library for API calls
-- `gitpython`: Git repository management
+- [`python-telegram-bot`](https://python-telegram-bot.org/)
+- [`requests`](https://docs.python-requests.org/)
+- [`gitpython`](https://gitpython.readthedocs.io/)
 
-See `requirements.txt` for versions.
+See `requirements.txt` for exact versions.
 
 ---
